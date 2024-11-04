@@ -1,68 +1,87 @@
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
-from statsmodels.tsa.seasonal import seasonal_decompose
+import ruptures as rpt
 from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.stattools import adfuller
 from arch import arch_model
-import pymc3 as pm
 
-# Load and Clean Data
 def load_and_clean_data(file_path):
-    df = pd.read_excel(file_path)
-    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-    df = df.dropna(subset=['Date', 'Price']).drop_duplicates(subset=['Date']).sort_values(by='Date').reset_index(drop=True)
-    return df
+    """
+    Load Brent oil price data, parse dates, handle missing values.
+    """
+    data = pd.read_csv(file_path)
+    data['Date'] = pd.to_datetime(data['Date'], errors='coerce')  
+    
+    
+    data.fillna(method='ffill', inplace=True)
+    return data
 
-# Exploratory Data Analysis
-def plot_time_series(df):
-    plt.figure(figsize=(14, 7))
-    plt.plot(df['Date'], df['Price'], label='Brent Oil Price')
+def plot_oil_price(data):
+    
+    plt.figure(figsize=(12, 6))
+    plt.plot(data['Price'], label='Brent Oil Price')
+    plt.title('Brent Oil Prices Over Time')
     plt.xlabel('Date')
     plt.ylabel('Price (USD)')
-    plt.title('Brent Oil Price Over Time')
     plt.legend()
     plt.show()
 
-def decompose_time_series(df, period=365):
-    result = seasonal_decompose(df.set_index('Date')['Price'], model='additive', period=period)
-    result.plot()
-    plt.show()
-    return result
-
-# Annotate Events
-def annotate_events(df, events):
-    events_df = pd.DataFrame(list(events.items()), columns=['Date', 'Event'])
-    events_df['Date'] = pd.to_datetime(events_df['Date'])
-    df = pd.merge(df, events_df, on='Date', how='left')
-    return df
-
-# ARIMA Model
-def arima_forecast(df, order=(5, 1, 0), steps=30):
-    model = ARIMA(df['Price'], order=order)
-    arima_result = model.fit()
-    forecast = arima_result.forecast(steps=steps)
-    return arima_result, forecast
-
-# GARCH Model
-def garch_forecast(df, p=1, q=1, steps=30):
-    garch_model = arch_model(df['Price'], vol='Garch', p=p, q=q)
-    garch_result = garch_model.fit(disp="off")
-    vol_forecast = garch_result.forecast(horizon=steps).variance[-1:]
-    return garch_result, vol_forecast
-
-# Bayesian Changepoint Detection
-def bayesian_changepoint_detection(df):
-    with pm.Model() as model:
-        switchpoint = pm.DiscreteUniform('switchpoint', lower=0, upper=len(df['Price']) - 1)
-        early_mean = pm.Normal('early_mean', mu=df['Price'].mean(), sd=10)
-        late_mean = pm.Normal('late_mean', mu=df['Price'].mean(), sd=10)
-        
-        idx = np.arange(len(df['Price']))
-        mean = pm.math.switch(switchpoint >= idx, early_mean, late_mean)
-        observed = pm.Normal('observed', mu=mean, sd=1, observed=df['Price'])
-        
-        trace = pm.sample(1000, cores=1)
+def change_point_detection(data):
+  
+    signal = data['Price'].values
+    algo = rpt.Pelt(model="rbf").fit(signal)
+    change_points = algo.predict(pen=10)  
     
-    pm.traceplot(trace)
+  
+    rpt.display(signal, change_points, figsize=(12, 6))
+    plt.title("Change Point Detection in Brent Oil Prices")
+    plt.xlabel("Time")
+    plt.ylabel("Price")
     plt.show()
-    return trace
+    
+    return change_points
+
+def summarize_data(data):
+    
+    summary = {
+        "Metric": [
+            "Start Date", "End Date", "Total Observations", 
+            "Missing Values", "Price Mean", 
+            "Price Standard Deviation", "Price Min", "Price Max"
+        ],
+        "Value": [
+            data.index.min(), data.index.max(), data.shape[0],
+            data.isnull().sum().sum(), data['Price'].mean(), 
+            data['Price'].std(), data['Price'].min(), data['Price'].max()
+        ]
+    }
+    
+    summary_df = pd.DataFrame(summary)
+    print(summary_df)
+    return summary_df
+
+def apply_arima_model(data, order=(1, 1, 1)):
+    model = ARIMA(data['Price'], order=order)
+    model_fit = model.fit()
+    print(model_fit.summary())
+    return model_fit
+
+def apply_garch_model(data, p=1, q=1):
+    model = arch_model(data['Price'], vol='Garch', p=p, q=q)
+    model_fit = model.fit()
+    print(model_fit.summary())
+    return model_fit
+
+def check_stationarity(data):
+    result = adfuller(data['Price'])
+    print('ADF Statistic:', result[0])
+    print('p-value:', result[1])
+    return result[1] < 0.05
+
+def export_results_to_markdown(summary, file_name='modeling_report.md'):
+    with open(file_name, 'w') as f:
+        f.write("# Analysis Report\n")
+        f.write("## Data Summary\n")
+        for key, value in summary.items():
+            f.write(f"- {key}: {value}\n")
+    print(f"Results exported to {file_name}")
